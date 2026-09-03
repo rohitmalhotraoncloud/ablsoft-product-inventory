@@ -1,0 +1,20 @@
+services:
+  api:
+    build: ./backend
+    ports:
+      - "8080:8080"
+    environment:
+      CORS_ALLOWED_ORIGIN: http://localhost:4200
+      DB_URL: jdbc:h2:file:/app/data/inventory
+    volumes:
+      - inventory-data:/app/data
+
+  web:
+    build: ./frontend
+    ports:
+      - "4200:80"
+    depends_on:
+      - api
+
+volumes:
+  inventory-data:

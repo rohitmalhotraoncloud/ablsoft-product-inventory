@@ -1,0 +1,113 @@
+<div class="page">
+  <header class="page-header">
+    <div>
+      <h1>Product Inventory</h1>
+    </div>
+    <div class="import-area">
+      <label class="import-button" [class.disabled]="importing()">
+        <input #fileInput type="file" accept=".xlsx,.xls"
+               (change)="onFileSelected($event, fileInput)" [disabled]="importing()" hidden />
+        {{ importing() ? 'Importing…' : 'Import Data' }}
+      </label>
+    </div>
+  </header>
+
+  @if (successMessage()) {
+    <div class="success-banner">
+      <span>{{ successMessage() }}</span>
+      <button class="dismiss success-dismiss" type="button" (click)="successMessage.set(null)">Dismiss</button>
+    </div>
+  }
+
+  @if (errorMessage()) {
+    <div class="error-banner">
+      <p>{{ errorMessage() }}</p>
+      @if (errorDetails().length) {
+        <table class="error-table">
+          <thead>
+            <tr><th>Row</th><th>Column</th><th>Message</th></tr>
+          </thead>
+          <tbody>
+            @for (detail of errorDetails(); track detail.row + detail.column + detail.message) {
+              <tr>
+                <td>{{ detail.row }}</td>
+                <td>{{ detail.column }}</td>
+                <td>{{ detail.message }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
+      <button class="dismiss" type="button" (click)="clearError()">Dismiss</button>
+    </div>
+  }
+
+  <section class="summary-cards">
+    <div class="card">
+      <span class="card-label">Total Products</span>
+      <span class="card-value">{{ summary()?.totalProducts ?? '—' }}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Total Inventory Value</span>
+      <span class="card-value">{{ summary()?.totalInventoryValue == null ? '—' : (summary()!.totalInventoryValue | currency:'USD':'symbol':'1.2-2') }}</span>
+    </div>
+    <div class="card">
+      <span class="card-label">Average Stock Age</span>
+      <span class="card-value">{{ summary()?.averageStockAgeDays == null ? '—' : (summary()!.averageStockAgeDays | number:'1.0-1') + ' days' }}</span>
+    </div>
+  </section>
+
+  <section class="table-section">
+    <div class="table-scroll">
+      <table class="product-table">
+        <thead>
+          <tr>
+            @for (column of columns; track column.key) {
+              <th>
+                <button type="button" class="sort-button" (click)="sort(column.key)">
+                  {{ column.label }}
+                  {{ sortBy() === column.key ? (direction() === 'asc' ? '▲' : '▼') : '' }}
+                </button>
+              </th>
+            }
+          </tr>
+        </thead>
+        <tbody>
+          @if (loadingTable()) {
+            <tr><td [attr.colspan]="columns.length" class="empty">Loading…</td></tr>
+          } @else if (!products().length) {
+            <tr><td [attr.colspan]="columns.length" class="empty">No products.</td></tr>
+          } @else {
+            @for (product of products(); track product.id) {
+              <tr>
+                <td>{{ product.productSku }}</td>
+                <td>{{ product.productName }}</td>
+                <td>{{ product.category }}</td>
+                <td>{{ product.purchaseDate | date:'mediumDate' }}</td>
+                <td>{{ product.unitPrice | currency:'USD':'symbol':'1.2-2' }}</td>
+                <td>{{ product.quantity | number }}</td>
+                <td>{{ product.stockAgeDays | number }}</td>
+              </tr>
+            }
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pagination">
+      <div class="page-size">
+        <label for="pageSize">Rows per page</label>
+        <select id="pageSize" [value]="size()" (change)="changePageSize($event)">
+          <option [value]="10">10</option>
+          <option [value]="20">20</option>
+          <option [value]="50">50</option>
+        </select>
+      </div>
+      <div class="page-controls">
+        <button (click)="goToPage(page() - 1)" [disabled]="page() === 0">Previous</button>
+        <span>Page {{ totalElements() ? page() + 1 : 0 }} of {{ totalPages() }} ({{ totalElements() }} rows)</span>
+        <button (click)="goToPage(page() + 1)" [disabled]="page() + 1 >= totalPages()">Next</button>
+      </div>
+    </div>
+  </section>
+</div>
