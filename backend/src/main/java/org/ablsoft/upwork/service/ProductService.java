@@ -7,6 +7,7 @@ import org.ablsoft.upwork.dto.PageResponse;
 import org.ablsoft.upwork.dto.ProductDto;
 import org.ablsoft.upwork.dto.RowError;
 import org.ablsoft.upwork.exception.DuplicateProductException;
+import org.ablsoft.upwork.repository.ProductImportRepository;
 import org.ablsoft.upwork.repository.ProductRepository;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
@@ -20,18 +21,23 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
-import static java.util.stream.Collectors.toSet;
+import static org.ablsoft.upwork.repository.ProductImportRepository.ProductKey;
 
 @Service
 @RequiredArgsConstructor
 public class ProductService {
+    private static final int CURRENCY_SCALE = 2;
+    private static final String PRODUCT_KEY_FIELD = "Product SKU + Purchase Date";
+    private static final String DUPLICATE_IN_FILE = "Duplicate combination in file";
+    private static final String ALREADY_EXISTS = "Combination already exists";
+    private static final String CONCURRENT_DUPLICATE = "A matching product was imported concurrently";
     private static final Map<String, String> SORT_FIELDS = Map.of(
             "id", "id",
             "productSku", "sku",
@@ -43,6 +49,7 @@ public class ProductService {
     );
 
     private final ProductRepository repository;
+    private final ProductImportRepository importRepository;
     private final ExcelReader reader;
     private final Clock clock;
 
@@ -57,26 +64,23 @@ public class ProductService {
             throw new IllegalArgumentException("Unsupported sort field: " + sortBy);
         }
 
+        LocalDate today = LocalDate.now(clock);
         Page<ProductDto> result = repository.findAll(PageRequest.of(page, size, Sort.by(direction, entityField)))
-                .map(product -> ProductDto.from(product, clock));
+                .map(product -> ProductDto.from(product, today));
         return PageResponse.from(result);
     }
 
     @Transactional(readOnly = true)
     public InventorySummary summary() {
-        List<LocalDate> purchaseDates = repository.findAllPurchaseDates();
-        LocalDate today = LocalDate.now(clock);
-        double averageAge = purchaseDates.stream()
-                .mapToLong(purchaseDate -> ChronoUnit.DAYS.between(purchaseDate, today))
-                .average()
-                .orElse(0.0);
-        BigDecimal totalValue = repository.calculateInventoryValue();
-        if (totalValue == null) {
-            totalValue = BigDecimal.ZERO;
-        }
+        ProductRepository.InventorySummaryProjection projection =
+                repository.calculateInventorySummary(LocalDate.now(clock));
+        BigDecimal totalValue = Objects.requireNonNullElse(
+                projection.getTotalInventoryValue(), BigDecimal.ZERO);
+        double averageAge = Objects.requireNonNullElse(
+                projection.getAverageStockAgeDays(), 0.0);
 
-        return new InventorySummary(purchaseDates.size(),
-                totalValue.setScale(2, RoundingMode.HALF_UP), averageAge);
+        return new InventorySummary(projection.getTotalProducts(),
+                totalValue.setScale(CURRENCY_SCALE, RoundingMode.HALF_UP), averageAge);
     }
 
     @Transactional
@@ -88,41 +92,34 @@ public class ProductService {
         }
 
         try {
-            repository.saveAllAndFlush(rows.stream().map(ExcelReader.ImportedProduct::toEntity).toList());
+            importRepository.insertAll(rows.stream().map(ExcelReader.ImportedProduct::toEntity).toList());
         } catch (DataIntegrityViolationException ignored) {
-            throw new DuplicateProductException(List.of(new RowError(0, "Product SKU + Purchase Date",
-                    "A matching product was imported concurrently")));
+            throw new DuplicateProductException(List.of(
+                    new RowError(0, PRODUCT_KEY_FIELD, CONCURRENT_DUPLICATE)));
         }
         return new ImportResult(rows.size());
     }
 
     private List<RowError> duplicateErrors(List<ExcelReader.ImportedProduct> rows) {
         List<RowError> errors = new ArrayList<>();
-        Set<ProductKey> seen = new HashSet<>();
+        Set<ProductKey> importedKeys = new HashSet<>();
         for (ExcelReader.ImportedProduct row : rows) {
-            if (!seen.add(new ProductKey(row.sku(), row.purchaseDate()))) {
-                errors.add(new RowError(row.row(), "Product SKU + Purchase Date", "Duplicate combination in file"));
+            if (!importedKeys.add(new ProductKey(row.sku(), row.purchaseDate()))) {
+                errors.add(new RowError(row.row(), PRODUCT_KEY_FIELD, DUPLICATE_IN_FILE));
             }
         }
+        if (!errors.isEmpty()) {
+            return errors;
+        }
 
-        Set<String> skus = rows.stream()
-                .map(ExcelReader.ImportedProduct::sku)
-                .collect(toSet());
-        Set<LocalDate> purchaseDates = rows.stream()
-                .map(ExcelReader.ImportedProduct::purchaseDate)
-                .collect(toSet());
-        Set<ProductKey> existing = repository.findExistingKeys(skus, purchaseDates).stream()
-                .map(product -> new ProductKey(product.getSku(), product.getPurchaseDate()))
-                .collect(toSet());
+        Set<ProductKey> existing = importRepository.findExistingKeys(importedKeys);
 
         for (ExcelReader.ImportedProduct row : rows) {
             if (existing.contains(new ProductKey(row.sku(), row.purchaseDate()))) {
-                errors.add(new RowError(row.row(), "Product SKU + Purchase Date", "Combination already exists"));
+                errors.add(new RowError(row.row(), PRODUCT_KEY_FIELD, ALREADY_EXISTS));
             }
         }
         return errors;
     }
 
-    private record ProductKey(String sku, LocalDate purchaseDate) {
-    }
 }
